@@ -4,6 +4,12 @@ use std::path::Path;
 
 use crate::order::{Order, OrderKind, Side};
 
+#[derive(Clone, Debug)]
+pub enum Command {
+    Order { seq: u64, order: Order },
+    Cancel { seq: u64, id: u64 },
+}
+
 pub struct Wal {
     file: BufWriter<File>,
 }
@@ -16,7 +22,7 @@ impl Wal {
         })
     }
 
-    pub fn append(&mut self, seq: u64, order: &Order) -> io::Result<()> {
+    pub fn append_order(&mut self, seq: u64, order: &Order) -> io::Result<()> {
         let side = match order.side {
             Side::Buy => "B",
             Side::Sell => "S",
@@ -27,9 +33,13 @@ impl Wal {
         };
         writeln!(
             self.file,
-            "{},{},{},{},{},{},{}",
+            "O,{},{},{},{},{},{},{}",
             seq, order.id, side, kind, order.price, order.qty, order.ts
         )
+    }
+
+    pub fn append_cancel(&mut self, seq: u64, id: u64) -> io::Result<()> {
+        writeln!(self.file, "C,{},{}", seq, id)
     }
 
     pub fn sync(&mut self) -> io::Result<()> {
@@ -38,7 +48,7 @@ impl Wal {
     }
 }
 
-pub fn read_orders(path: &Path) -> io::Result<Vec<(u64, Order)>> {
+pub fn read_commands(path: &Path) -> io::Result<Vec<Command>> {
     let mut out = Vec::new();
     if !path.exists() {
         return Ok(out);
@@ -50,35 +60,38 @@ pub fn read_orders(path: &Path) -> io::Result<Vec<(u64, Order)>> {
             continue;
         }
         let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 7 {
-            continue;
+        match parts[0] {
+            "O" if parts.len() == 8 => {
+                let seq: u64 = parts[1].parse().unwrap_or(0);
+                let id: u64 = parts[2].parse().unwrap_or(0);
+                let side = if parts[3] == "B" { Side::Buy } else { Side::Sell };
+                let kind = if parts[4] == "L" {
+                    OrderKind::Limit
+                } else {
+                    OrderKind::Market
+                };
+                let price: i64 = parts[5].parse().unwrap_or(0);
+                let qty: u64 = parts[6].parse().unwrap_or(0);
+                let ts: u64 = parts[7].parse().unwrap_or(0);
+                out.push(Command::Order {
+                    seq,
+                    order: Order {
+                        id,
+                        price,
+                        qty,
+                        side,
+                        kind,
+                        ts,
+                    },
+                });
+            }
+            "C" if parts.len() == 3 => {
+                let seq: u64 = parts[1].parse().unwrap_or(0);
+                let id: u64 = parts[2].parse().unwrap_or(0);
+                out.push(Command::Cancel { seq, id });
+            }
+            _ => continue,
         }
-        let seq: u64 = parts[0].parse().unwrap_or(0);
-        let id: u64 = parts[1].parse().unwrap_or(0);
-        let side = if parts[2] == "B" {
-            Side::Buy
-        } else {
-            Side::Sell
-        };
-        let kind = if parts[3] == "L" {
-            OrderKind::Limit
-        } else {
-            OrderKind::Market
-        };
-        let price: i64 = parts[4].parse().unwrap_or(0);
-        let qty: u64 = parts[5].parse().unwrap_or(0);
-        let ts: u64 = parts[6].parse().unwrap_or(0);
-        out.push((
-            seq,
-            Order {
-                id,
-                price,
-                qty,
-                side,
-                kind,
-                ts,
-            },
-        ));
     }
     Ok(out)
 }
